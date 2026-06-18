@@ -1,13 +1,118 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String     @id @default(uuid())
+  name      String
+  email     String     @unique
+  password  String
+  role      String     @default("user")
+  blogPosts BlogPost[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+}
+
+model BlogPost {
+  id             String   @id @default(uuid())
+  title          String
+  slug           String   @unique
+  content        String
+  authorId       String?
+  author         User?    @relation(fields: [authorId], references: [id])
+  imageUrl       String?
+  seoTitle       String?
+  seoDescription String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model Category {
+  id        String    @id @default(uuid())
+  name      String    @unique
+  slug      String    @unique
+  galleries Gallery[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Gallery {
+  id         String   @id @default(uuid())
+  title      String
+  imageUrl   String
+  publicId   String
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id])
+  isFeatured Boolean  @default(false)
+  order      Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model Service {
+  id           String    @id @default(uuid())
+  title        String
+  description  String
+  price        Float
+  deliverables String[]
+  imageUrl     String?
+  isActive     Boolean   @default(true)
+  bookings     Booking[] @relation("BookingServices")
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model Booking {
+  id                  String    @id @default(uuid())
+  customerName        String
+  email               String
+  phone               String
+  eventDate           DateTime
+  eventTime           String
+  eventType           String?
+  eventLocation       String
+  guestCount          Int?
+  budgetRange         String?
+  specialRequirements String?
+  services            Service[] @relation("BookingServices")
+  status              String    @default("New Inquiry")
+  totalPrice          Float
+  referenceNumber     String    @unique
+  isContactQuery      Boolean   @default(false)
+  neededImprovements  String?
+  emailsSent          Json?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+}
+
+model Setting {
+  id                String   @id @default(uuid())
+  siteName          String   @default("JonathanPortfolio")
+  logoUrl           String?
+  contactEmail      String?
+  contactPhone      String?
+  contactWhatsapp   String?
+  notificationEmail String?
+  websiteTheme      String   @default("luxury-gold")
+  address           String?
+  socialLinks       Json?
+  heroText          String?
+  heroSubtext       String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model Testimonial {
+  id         String   @id @default(uuid())
+  name       String
+  rating     Int
+  comment    String
+  isApproved Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 }

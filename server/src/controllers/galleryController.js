@@ -1,13 +1,28 @@
-const Gallery = require('../models/Gallery');
-const Category = require('../models/Category');
+const prisma = require('../config/prisma');
 
 // @desc    Get all gallery images
 // @route   GET /api/gallery
 // @access  Public
 const getGallery = async (req, res) => {
   try {
-    const gallery = await Gallery.find({}).populate('category').sort({ order: 1, createdAt: -1 });
-    res.json(gallery);
+    const gallery = await prisma.gallery.findMany({
+      include: {
+        category: true,
+      },
+      orderBy: [
+        { order: 'asc' },
+        { createdAt: 'desc' }
+      ]
+    });
+    
+    // Map id to _id for frontend compatibility
+    const mappedGallery = gallery.map(img => ({
+      ...img,
+      _id: img.id,
+      category: img.category ? { ...img.category, _id: img.category.id } : null
+    }));
+
+    res.json(mappedGallery);
   } catch (error) {
     res.status(500).json({ message: 'Server error' });
   }
@@ -23,22 +38,32 @@ const addGalleryImage = async (req, res) => {
     // If order is not specified, assign next high order value
     let orderVal = order;
     if (orderVal === undefined) {
-      const highest = await Gallery.findOne({ category: categoryId }).sort({ order: -1 });
+      const highest = await prisma.gallery.findFirst({
+        where: { categoryId: categoryId },
+        orderBy: { order: 'desc' }
+      });
       orderVal = highest ? highest.order + 1 : 0;
     }
 
-    const image = new Gallery({ 
-      title, 
-      imageUrl, 
-      publicId, 
-      category: categoryId, 
-      isFeatured,
-      order: orderVal
+    const createdImage = await prisma.gallery.create({
+      data: {
+        title,
+        imageUrl,
+        publicId,
+        categoryId,
+        isFeatured: isFeatured !== undefined ? isFeatured : false,
+        order: orderVal
+      },
+      include: {
+        category: true
+      }
     });
     
-    const createdImage = await image.save();
-    const populatedImage = await createdImage.populate('category');
-    res.status(201).json(populatedImage);
+    res.status(201).json({
+      ...createdImage,
+      _id: createdImage.id,
+      category: createdImage.category ? { ...createdImage.category, _id: createdImage.category.id } : null
+    });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
@@ -50,22 +75,32 @@ const addGalleryImage = async (req, res) => {
 const updateGalleryImage = async (req, res) => {
   try {
     const { title, categoryId, isFeatured, order } = req.body;
-    const image = await Gallery.findById(req.params.id);
+    
+    const dataToUpdate = {};
+    if (title !== undefined) dataToUpdate.title = title;
+    if (categoryId !== undefined) dataToUpdate.categoryId = categoryId;
+    if (isFeatured !== undefined) dataToUpdate.isFeatured = isFeatured;
+    if (order !== undefined) dataToUpdate.order = order;
 
-    if (image) {
-      image.title = title !== undefined ? title : image.title;
-      image.category = categoryId !== undefined ? categoryId : image.category;
-      image.isFeatured = isFeatured !== undefined ? isFeatured : image.isFeatured;
-      image.order = order !== undefined ? order : image.order;
-
-      const updatedImage = await image.save();
-      const populatedImage = await updatedImage.populate('category');
-      res.json(populatedImage);
-    } else {
-      res.status(404).json({ message: 'Image not found' });
-    }
+    const updatedImage = await prisma.gallery.update({
+      where: { id: req.params.id },
+      data: dataToUpdate,
+      include: {
+        category: true
+      }
+    });
+    
+    res.json({
+      ...updatedImage,
+      _id: updatedImage.id,
+      category: updatedImage.category ? { ...updatedImage.category, _id: updatedImage.category.id } : null
+    });
   } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
+    if (error.code === 'P2025') {
+      res.status(404).json({ message: 'Image not found' });
+    } else {
+      res.status(500).json({ message: 'Server error', error: error.message });
+    }
   }
 };
 
@@ -79,14 +114,16 @@ const reorderGalleryImages = async (req, res) => {
       return res.status(400).json({ message: 'Invalid payload' });
     }
 
-    const bulkOps = images.map(img => ({
-      updateOne: {
-        filter: { _id: img.id },
-        update: { $set: { order: img.order } }
-      }
-    }));
+    // Prisma doesn't have a direct bulkWrite for updates with different values per row.
+    // We can use a transaction.
+    const updates = images.map(img => 
+      prisma.gallery.update({
+        where: { id: img.id },
+        data: { order: img.order }
+      })
+    );
 
-    await Gallery.bulkWrite(bulkOps);
+    await prisma.$transaction(updates);
     res.json({ message: 'Gallery order updated' });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -98,15 +135,16 @@ const reorderGalleryImages = async (req, res) => {
 // @access  Private/Admin
 const deleteGalleryImage = async (req, res) => {
   try {
-    const image = await Gallery.findById(req.params.id);
-    if (image) {
-      await Gallery.deleteOne({ _id: image._id });
-      res.json({ message: 'Image removed' });
-    } else {
-      res.status(404).json({ message: 'Image not found' });
-    }
+    await prisma.gallery.delete({
+      where: { id: req.params.id }
+    });
+    res.json({ message: 'Image removed' });
   } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+    if (error.code === 'P2025') {
+      res.status(404).json({ message: 'Image not found' });
+    } else {
+      res.status(500).json({ message: 'Server error' });
+    }
   }
 };
 

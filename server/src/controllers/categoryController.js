@@ -1,13 +1,19 @@
-const Category = require('../models/Category');
-const Gallery = require('../models/Gallery');
+const prisma = require('../config/prisma');
 
 // @desc    Get all categories
 // @route   GET /api/categories
 // @access  Public
 const getCategories = async (req, res) => {
   try {
-    const categories = await Category.find({});
-    res.json(categories);
+    const categories = await prisma.category.findMany();
+    
+    // Map id to _id for frontend compatibility
+    const mappedCategories = categories.map(cat => ({
+      ...cat,
+      _id: cat.id
+    }));
+    
+    res.json(mappedCategories);
   } catch (error) {
     res.status(500).json({ message: 'Server error' });
   }
@@ -21,13 +27,14 @@ const createCategory = async (req, res) => {
     const { name } = req.body;
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
 
-    const categoryExists = await Category.findOne({ slug });
+    const categoryExists = await prisma.category.findUnique({ where: { slug } });
     if (categoryExists) {
       return res.status(400).json({ message: 'Category already exists' });
     }
 
-    const category = new Category({ name, slug });
-    const createdCategory = await category.save();
+    const createdCategory = await prisma.category.create({
+      data: { name, slug }
+    });
 
     // Automatically seed 4 default high-quality photography images for the new category
     const defaultImages = [
@@ -35,7 +42,7 @@ const createCategory = async (req, res) => {
         title: `${name} Showcase 1`,
         imageUrl: 'https://images.unsplash.com/photo-1519741497674-611481863552?q=80&w=800&auto=format&fit=crop',
         publicId: `placeholder_unsplash_${Date.now()}_1`,
-        category: createdCategory._id,
+        categoryId: createdCategory.id,
         isFeatured: false,
         order: 0
       },
@@ -43,7 +50,7 @@ const createCategory = async (req, res) => {
         title: `${name} Showcase 2`,
         imageUrl: 'https://images.unsplash.com/photo-1511285560929-80b456fea0bc?q=80&w=800&auto=format&fit=crop',
         publicId: `placeholder_unsplash_${Date.now()}_2`,
-        category: createdCategory._id,
+        categoryId: createdCategory.id,
         isFeatured: false,
         order: 1
       },
@@ -51,7 +58,7 @@ const createCategory = async (req, res) => {
         title: `${name} Showcase 3`,
         imageUrl: 'https://images.unsplash.com/photo-1465495976277-4387d4b0b4c6?q=80&w=800&auto=format&fit=crop',
         publicId: `placeholder_unsplash_${Date.now()}_3`,
-        category: createdCategory._id,
+        categoryId: createdCategory.id,
         isFeatured: false,
         order: 2
       },
@@ -59,15 +66,15 @@ const createCategory = async (req, res) => {
         title: `${name} Showcase 4`,
         imageUrl: 'https://images.unsplash.com/photo-1519225421980-715cb0215aed?q=80&w=800&auto=format&fit=crop',
         publicId: `placeholder_unsplash_${Date.now()}_4`,
-        category: createdCategory._id,
+        categoryId: createdCategory.id,
         isFeatured: false,
         order: 3
       }
     ];
 
-    await Gallery.insertMany(defaultImages);
+    await prisma.gallery.createMany({ data: defaultImages });
 
-    res.status(201).json(createdCategory);
+    res.status(201).json({ ...createdCategory, _id: createdCategory.id });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
@@ -79,18 +86,20 @@ const createCategory = async (req, res) => {
 const updateCategory = async (req, res) => {
   try {
     const { name } = req.body;
-    const category = await Category.findById(req.params.id);
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
 
-    if (category) {
-      category.name = name;
-      category.slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
-      const updatedCategory = await category.save();
-      res.json(updatedCategory);
-    } else {
-      res.status(404).json({ message: 'Category not found' });
-    }
+    const updatedCategory = await prisma.category.update({
+      where: { id: req.params.id },
+      data: { name, slug }
+    });
+
+    res.json({ ...updatedCategory, _id: updatedCategory.id });
   } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+    if (error.code === 'P2025') {
+      res.status(404).json({ message: 'Category not found' });
+    } else {
+      res.status(500).json({ message: 'Server error' });
+    }
   }
 };
 
@@ -99,15 +108,21 @@ const updateCategory = async (req, res) => {
 // @access  Private/Admin
 const deleteCategory = async (req, res) => {
   try {
-    const category = await Category.findById(req.params.id);
-    if (category) {
-      await Category.deleteOne({ _id: category._id });
-      res.json({ message: 'Category removed' });
-    } else {
-      res.status(404).json({ message: 'Category not found' });
-    }
+    // Delete associated galleries first
+    await prisma.gallery.deleteMany({
+      where: { categoryId: req.params.id }
+    });
+    
+    await prisma.category.delete({
+      where: { id: req.params.id }
+    });
+    res.json({ message: 'Category removed' });
   } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+    if (error.code === 'P2025') {
+      res.status(404).json({ message: 'Category not found' });
+    } else {
+      res.status(500).json({ message: 'Server error' });
+    }
   }
 };
 

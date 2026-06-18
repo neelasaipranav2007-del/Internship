@@ -1,6 +1,16 @@
-const User = require('../models/User');
+const prisma = require('../config/prisma');
+const bcrypt = require('bcryptjs');
 const generateToken = require('../utils/generateToken');
 const { sendEmail } = require('../utils/email');
+
+const matchPassword = async (enteredPassword, storedPassword) => {
+  return await bcrypt.compare(enteredPassword, storedPassword);
+};
+
+const hashPassword = async (password) => {
+  const salt = await bcrypt.genSalt(10);
+  return await bcrypt.hash(password, salt);
+};
 
 // @desc    Auth user & get token
 // @route   POST /api/auth/login
@@ -9,15 +19,15 @@ const authUser = async (req, res) => {
   const { email, password } = req.body;
 
   try {
-    const user = await User.findOne({ email });
+    const user = await prisma.user.findUnique({ where: { email } });
 
-    if (user && (await user.matchPassword(password))) {
+    if (user && (await matchPassword(password, user.password))) {
       res.json({
-        _id: user._id,
+        _id: user.id,
         name: user.name,
         email: user.email,
         role: user.role,
-        token: generateToken(user._id),
+        token: generateToken(user.id),
       });
     } else {
       res.status(401).json({ message: 'Invalid email or password' });
@@ -34,25 +44,28 @@ const registerUser = async (req, res) => {
   const { name, email, password } = req.body;
 
   try {
-    const userExists = await User.findOne({ email });
+    const userExists = await prisma.user.findUnique({ where: { email } });
 
     if (userExists) {
       return res.status(400).json({ message: 'User already exists' });
     }
 
-    const user = await User.create({
-      name,
-      email,
-      password,
+    const hashedPassword = await hashPassword(password);
+    const user = await prisma.user.create({
+      data: {
+        name,
+        email,
+        password: hashedPassword,
+      },
     });
 
     if (user) {
       res.status(201).json({
-        _id: user._id,
+        _id: user.id,
         name: user.name,
         email: user.email,
         role: user.role,
-        token: generateToken(user._id),
+        token: generateToken(user.id),
       });
     } else {
       res.status(400).json({ message: 'Invalid user data' });
@@ -68,11 +81,14 @@ const registerUser = async (req, res) => {
 const changePassword = async (req, res) => {
   try {
     const { oldPassword, newPassword } = req.body;
-    const user = await User.findById(req.user._id);
+    const user = await prisma.user.findUnique({ where: { id: req.user._id } });
 
-    if (user && (await user.matchPassword(oldPassword))) {
-      user.password = newPassword; // Trigger pre-save hook to hash
-      await user.save();
+    if (user && (await matchPassword(oldPassword, user.password))) {
+      const hashedPassword = await hashPassword(newPassword);
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { password: hashedPassword },
+      });
       res.json({ message: 'Password changed successfully' });
     } else {
       res.status(400).json({ message: 'Invalid current password' });
@@ -88,15 +104,19 @@ const changePassword = async (req, res) => {
 const forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
-    const user = await User.findOne({ email });
+    const user = await prisma.user.findUnique({ where: { email } });
 
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
     const tempPassword = Math.random().toString(36).substring(2, 10);
-    user.password = tempPassword; // Trigger pre-save hook to hash
-    await user.save();
+    const hashedPassword = await hashPassword(tempPassword);
+    
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { password: hashedPassword },
+    });
 
     await sendEmail({
       to: email,

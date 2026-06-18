@@ -1,5 +1,4 @@
-const Booking = require('../models/Booking');
-const Setting = require('../models/Setting');
+const prisma = require('../config/prisma');
 const { generateDocumentBuffer } = require('../utils/pdfGenerator');
 const { sendEmail } = require('../utils/email');
 
@@ -17,30 +16,44 @@ const createBooking = async (req, res) => {
 
     const referenceNumber = `JON-${Math.floor(1000 + Math.random() * 9000)}`;
 
-    const booking = new Booking({
-      customerName, email, phone, eventDate, eventTime,
-      eventType, eventLocation, guestCount, budgetRange,
-      specialRequirements, services, totalPrice, referenceNumber,
-      isContactQuery, neededImprovements
-    });
-
-    booking.emailsSent.push({
+    const initialEmailsSent = [{
       emailType: 'Confirmation',
       status: 'Sent',
       subject: (isContactQuery || eventType === 'General Inquiry')
         ? `Thank you for contacting Jonathan Studio - Message Ref #${referenceNumber}`
-        : `Your Photography Booking Confirmation - By Jonathan Studio`
-    });
+        : `Your Photography Booking Confirmation - By Jonathan Studio`,
+      dateSent: new Date().toISOString()
+    }];
 
-    const createdBooking = await booking.save();
+    // connect services
+    const serviceConnections = (services && services.length > 0) 
+      ? services.map(serviceId => ({ id: serviceId })) 
+      : [];
+
+    const createdBooking = await prisma.booking.create({
+      data: {
+        customerName, email, phone, 
+        eventDate: new Date(eventDate), 
+        eventTime, eventType, eventLocation, 
+        guestCount: guestCount ? parseInt(guestCount) : null, 
+        budgetRange, specialRequirements, 
+        totalPrice: parseFloat(totalPrice), 
+        referenceNumber,
+        isContactQuery: isContactQuery || false, 
+        neededImprovements,
+        emailsSent: initialEmailsSent,
+        services: {
+          connect: serviceConnections
+        }
+      },
+      include: {
+        services: true
+      }
+    });
 
     let attachments = [];
     if (!isContactQuery && eventType !== 'General Inquiry') {
       try {
-        // To safely generate PDF we need to populate services if they aren't fully populated.
-        await createdBooking.populate('services', 'title price');
-
-        // Generate PDFs
         const invoicePdfBuffer = await generateDocumentBuffer(createdBooking, 'INVOICE');
         const summaryPdfBuffer = await generateDocumentBuffer(createdBooking, 'BOOKING SUMMARY');
 
@@ -53,31 +66,22 @@ const createBooking = async (req, res) => {
       }
     }
 
-    // Fetch settings to get notification email and contact info
     let adminEmail = 'admin@jonathanportfolio.com';
     let contactPhone = '+91 98765 43210';
     let contactEmail = '';
     try {
-      const settings = await Setting.findOne();
+      const settings = await prisma.setting.findFirst();
       if (settings) {
-        if (settings.notificationEmail) {
-          adminEmail = settings.notificationEmail;
-        }
-        if (settings.contactPhone) {
-          contactPhone = settings.contactPhone;
-        }
-        if (settings.contactEmail) {
-          contactEmail = settings.contactEmail;
-        }
+        if (settings.notificationEmail) adminEmail = settings.notificationEmail;
+        if (settings.contactPhone) contactPhone = settings.contactPhone;
+        if (settings.contactEmail) contactEmail = settings.contactEmail;
       }
     } catch (dbErr) {
       console.error('Error fetching settings for booking email:', dbErr.message);
     }
 
-    // Send confirmation emails (wrapped in try-catch to prevent booking creation failure if offline/SMTP fails)
     try {
       if (isContactQuery || eventType === 'General Inquiry') {
-        // Send confirmation to customer
         await sendEmail({
           to: email,
           replyTo: contactEmail || undefined,
@@ -86,7 +90,6 @@ const createBooking = async (req, res) => {
           attachments: attachments
         });
 
-        // Send notification to admin
         await sendEmail({
           to: adminEmail,
           replyTo: email,
@@ -94,7 +97,6 @@ const createBooking = async (req, res) => {
           text: `New contact form submission received.\n\nSender Name: ${customerName}\nSender Email: ${email}\nEvent Interest: ${eventType || 'General Inquiry'}\n\nQuery:\n"${specialRequirements}"\n\nNeeded Improvements / Suggestions:\n"${neededImprovements || 'None'}"\n\nReference: ${referenceNumber}\n\nPlease check the admin dashboard for details.`
         });
       } else {
-        // Send confirmation to customer
         await sendEmail({
           to: email,
           replyTo: contactEmail || undefined,
@@ -103,7 +105,6 @@ const createBooking = async (req, res) => {
           attachments: attachments
         });
 
-        // Send notification to admin
         await sendEmail({
           to: adminEmail,
           replyTo: email,
@@ -113,14 +114,17 @@ const createBooking = async (req, res) => {
       }
     } catch (emailError) {
       console.error('Failed to send booking emails:', emailError.message);
-      // Update email log status to failed
-      if (createdBooking.emailsSent && createdBooking.emailsSent.length > 0) {
-        createdBooking.emailsSent[0].status = 'Failed (SMTP Timeout)';
-        await createdBooking.save();
+      const updatedEmails = Array.isArray(createdBooking.emailsSent) ? [...createdBooking.emailsSent] : [];
+      if (updatedEmails.length > 0) {
+        updatedEmails[0].status = 'Failed (SMTP Timeout)';
+        await prisma.booking.update({
+          where: { id: createdBooking.id },
+          data: { emailsSent: updatedEmails }
+        });
       }
     }
 
-    res.status(201).json(createdBooking);
+    res.status(201).json({ ...createdBooking, _id: createdBooking.id });
   } catch (error) {
     console.error('CREATE BOOKING ERROR:', error);
     res.status(500).json({ message: 'Server Error', error: error.message });
@@ -132,8 +136,22 @@ const createBooking = async (req, res) => {
 // @access  Private/Admin
 const getBookings = async (req, res) => {
   try {
-    const bookings = await Booking.find({}).populate('services', 'title price').sort({ createdAt: -1 });
-    res.json(bookings);
+    const bookings = await prisma.booking.findMany({
+      include: {
+        services: true
+      },
+      orderBy: {
+        createdAt: 'desc'
+      }
+    });
+    
+    const mappedBookings = bookings.map(b => ({
+      ...b,
+      _id: b.id,
+      services: b.services.map(s => ({ ...s, _id: s.id }))
+    }));
+    
+    res.json(mappedBookings);
   } catch (error) {
     res.status(500).json({ message: 'Server Error' });
   }
@@ -145,17 +163,19 @@ const getBookings = async (req, res) => {
 const updateBookingStatus = async (req, res) => {
   try {
     const { status } = req.body;
-    const booking = await Booking.findById(req.params.id);
-
-    if (booking) {
-      booking.status = status;
-      const updatedBooking = await booking.save();
-      res.json(updatedBooking);
-    } else {
-      res.status(404).json({ message: 'Booking not found' });
-    }
+    
+    const updatedBooking = await prisma.booking.update({
+      where: { id: req.params.id },
+      data: { status }
+    });
+    
+    res.json({ ...updatedBooking, _id: updatedBooking.id });
   } catch (error) {
-    res.status(500).json({ message: 'Server Error' });
+    if (error.code === 'P2025') {
+      res.status(404).json({ message: 'Booking not found' });
+    } else {
+      res.status(500).json({ message: 'Server Error' });
+    }
   }
 };
 
@@ -164,7 +184,11 @@ const updateBookingStatus = async (req, res) => {
 // @access  Private/Admin
 const downloadInvoice = async (req, res) => {
   try {
-    const booking = await Booking.findById(req.params.id).populate('services', 'title price');
+    const booking = await prisma.booking.findUnique({
+      where: { id: req.params.id },
+      include: { services: true }
+    });
+    
     if (!booking) {
       return res.status(404).json({ message: 'Booking not found' });
     }
@@ -189,7 +213,7 @@ const downloadInvoice = async (req, res) => {
 const sendEmailReply = async (req, res) => {
   try {
     const { subject, message } = req.body;
-    const booking = await Booking.findById(req.params.id);
+    const booking = await prisma.booking.findUnique({ where: { id: req.params.id } });
 
     if (!booking) {
       return res.status(404).json({ message: 'Booking not found' });
@@ -201,14 +225,21 @@ const sendEmailReply = async (req, res) => {
       text: message
     });
 
-    booking.emailsSent.push({
+    const newEmailLog = {
       emailType: 'Reply',
       status: 'Sent',
-      subject: subject || `Regarding your booking inquiry #${booking.referenceNumber}`
+      subject: subject || `Regarding your booking inquiry #${booking.referenceNumber}`,
+      dateSent: new Date().toISOString()
+    };
+    
+    const currentEmails = Array.isArray(booking.emailsSent) ? booking.emailsSent : [];
+
+    const updatedBooking = await prisma.booking.update({
+      where: { id: booking.id },
+      data: { emailsSent: [...currentEmails, newEmailLog] }
     });
     
-    await booking.save();
-    res.json({ message: 'Email sent successfully', booking });
+    res.json({ message: 'Email sent successfully', booking: { ...updatedBooking, _id: updatedBooking.id } });
   } catch (error) {
     res.status(500).json({ message: 'Server Error', error: error.message });
   }
@@ -219,7 +250,10 @@ const sendEmailReply = async (req, res) => {
 // @access  Private/Admin
 const sendInvoiceEmail = async (req, res) => {
   try {
-    const booking = await Booking.findById(req.params.id).populate('services', 'title price');
+    const booking = await prisma.booking.findUnique({
+      where: { id: req.params.id },
+      include: { services: true }
+    });
 
     if (!booking) {
       return res.status(404).json({ message: 'Booking not found' });
@@ -240,14 +274,21 @@ const sendInvoiceEmail = async (req, res) => {
       attachments
     });
 
-    booking.emailsSent.push({
+    const newEmailLog = {
       emailType: 'Invoice',
       status: 'Sent',
-      subject: `Invoice for Booking #${booking.referenceNumber} - By Jonathan Studio`
+      subject: `Invoice for Booking #${booking.referenceNumber} - By Jonathan Studio`,
+      dateSent: new Date().toISOString()
+    };
+    
+    const currentEmails = Array.isArray(booking.emailsSent) ? booking.emailsSent : [];
+
+    const updatedBooking = await prisma.booking.update({
+      where: { id: booking.id },
+      data: { emailsSent: [...currentEmails, newEmailLog] }
     });
 
-    await booking.save();
-    res.json({ message: 'Invoice email sent successfully', booking });
+    res.json({ message: 'Invoice email sent successfully', booking: { ...updatedBooking, _id: updatedBooking.id } });
   } catch (error) {
     res.status(500).json({ message: 'Server Error', error: error.message });
   }
@@ -258,7 +299,10 @@ const sendInvoiceEmail = async (req, res) => {
 // @access  Private/Admin
 const sendQuotationEmail = async (req, res) => {
   try {
-    const booking = await Booking.findById(req.params.id).populate('services', 'title price');
+    const booking = await prisma.booking.findUnique({
+      where: { id: req.params.id },
+      include: { services: true }
+    });
 
     if (!booking) {
       return res.status(404).json({ message: 'Booking not found' });
@@ -279,14 +323,21 @@ const sendQuotationEmail = async (req, res) => {
       attachments
     });
 
-    booking.emailsSent.push({
+    const newEmailLog = {
       emailType: 'Quotation',
       status: 'Sent',
-      subject: `Quotation for Services - Booking #${booking.referenceNumber}`
+      subject: `Quotation for Services - Booking #${booking.referenceNumber}`,
+      dateSent: new Date().toISOString()
+    };
+    
+    const currentEmails = Array.isArray(booking.emailsSent) ? booking.emailsSent : [];
+
+    const updatedBooking = await prisma.booking.update({
+      where: { id: booking.id },
+      data: { emailsSent: [...currentEmails, newEmailLog] }
     });
 
-    await booking.save();
-    res.json({ message: 'Quotation email sent successfully', booking });
+    res.json({ message: 'Quotation email sent successfully', booking: { ...updatedBooking, _id: updatedBooking.id } });
   } catch (error) {
     res.status(500).json({ message: 'Server Error', error: error.message });
   }
@@ -297,7 +348,10 @@ const sendQuotationEmail = async (req, res) => {
 // @access  Public
 const cancelBookingByRef = async (req, res) => {
   try {
-    const booking = await Booking.findOne({ referenceNumber: req.params.ref });
+    const booking = await prisma.booking.findUnique({ 
+      where: { referenceNumber: req.params.ref } 
+    });
+    
     if (!booking) {
       return res.status(404).json({ message: 'Booking reference not found.' });
     }
@@ -306,21 +360,27 @@ const cancelBookingByRef = async (req, res) => {
       return res.status(400).json({ message: 'Booking is already cancelled.' });
     }
 
-    booking.status = 'Cancelled';
-    
-    booking.emailsSent.push({
+    const newEmailLog = {
       emailType: 'Cancellation',
       status: 'Sent',
-      subject: `Booking Cancellation Confirmation - Ref #${booking.referenceNumber}`
+      subject: `Booking Cancellation Confirmation - Ref #${booking.referenceNumber}`,
+      dateSent: new Date().toISOString()
+    };
+    
+    const currentEmails = Array.isArray(booking.emailsSent) ? booking.emailsSent : [];
+
+    const updatedBooking = await prisma.booking.update({
+      where: { id: booking.id },
+      data: { 
+        status: 'Cancelled',
+        emailsSent: [...currentEmails, newEmailLog]
+      }
     });
 
-    const updatedBooking = await booking.save();
-
-    // Fetch settings to get dynamic emails
     let adminEmail = 'admin@jonathanportfolio.com';
     let contactPhone = '+91 98765 43210';
     try {
-      const settings = await Setting.findOne();
+      const settings = await prisma.setting.findFirst();
       if (settings) {
         if (settings.notificationEmail) adminEmail = settings.notificationEmail;
         if (settings.contactPhone) contactPhone = settings.contactPhone;
@@ -329,7 +389,6 @@ const cancelBookingByRef = async (req, res) => {
       console.error(dbErr);
     }
 
-    // Send emails
     try {
       await sendEmail({
         to: booking.email,
@@ -347,7 +406,7 @@ const cancelBookingByRef = async (req, res) => {
       console.error('Failed to send cancellation emails:', emailError.message);
     }
 
-    res.json({ message: 'Booking cancelled successfully', booking: updatedBooking });
+    res.json({ message: 'Booking cancelled successfully', booking: { ...updatedBooking, _id: updatedBooking.id } });
   } catch (error) {
     console.error('CANCEL BOOKING BY REF ERROR:', error);
     res.status(500).json({ message: 'Server Error', error: error.message });
@@ -364,4 +423,3 @@ module.exports = {
   sendQuotationEmail,
   cancelBookingByRef
 };
-

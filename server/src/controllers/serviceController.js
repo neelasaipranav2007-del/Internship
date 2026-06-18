@@ -1,4 +1,4 @@
-const Service = require('../models/Service');
+const prisma = require('../config/prisma');
 
 // @desc    Get all services (supports all=true query for admin)
 // @route   GET /api/services
@@ -6,8 +6,14 @@ const Service = require('../models/Service');
 const getServices = async (req, res) => {
   try {
     const filter = req.query.all === 'true' ? {} : { isActive: true };
-    const services = await Service.find(filter);
-    res.json(services);
+    const services = await prisma.service.findMany({ where: filter });
+    
+    const mappedServices = services.map(srv => ({
+      ...srv,
+      _id: srv.id
+    }));
+    
+    res.json(mappedServices);
   } catch (error) {
     res.status(500).json({ message: 'Server error' });
   }
@@ -19,16 +25,19 @@ const getServices = async (req, res) => {
 const createService = async (req, res) => {
   try {
     const { title, description, price, deliverables, imageUrl, isActive } = req.body;
-    const service = new Service({ 
-      title, 
-      description, 
-      price, 
-      deliverables, 
-      imageUrl,
-      isActive: isActive !== undefined ? isActive : true
+    
+    const createdService = await prisma.service.create({
+      data: {
+        title,
+        description,
+        price: parseFloat(price),
+        deliverables: deliverables || [],
+        imageUrl,
+        isActive: isActive !== undefined ? isActive : true
+      }
     });
-    const createdService = await service.save();
-    res.status(201).json(createdService);
+    
+    res.status(201).json({ ...createdService, _id: createdService.id });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
@@ -40,23 +49,27 @@ const createService = async (req, res) => {
 const updateService = async (req, res) => {
   try {
     const { title, description, price, deliverables, imageUrl, isActive } = req.body;
-    const service = await Service.findById(req.params.id);
+    
+    const dataToUpdate = {};
+    if (title !== undefined) dataToUpdate.title = title;
+    if (description !== undefined) dataToUpdate.description = description;
+    if (price !== undefined) dataToUpdate.price = parseFloat(price);
+    if (deliverables !== undefined) dataToUpdate.deliverables = deliverables;
+    if (imageUrl !== undefined) dataToUpdate.imageUrl = imageUrl;
+    if (isActive !== undefined) dataToUpdate.isActive = isActive;
 
-    if (service) {
-      service.title = title !== undefined ? title : service.title;
-      service.description = description !== undefined ? description : service.description;
-      service.price = price !== undefined ? price : service.price;
-      service.deliverables = deliverables !== undefined ? deliverables : service.deliverables;
-      service.imageUrl = imageUrl !== undefined ? imageUrl : service.imageUrl;
-      service.isActive = isActive !== undefined ? isActive : service.isActive;
-
-      const updatedService = await service.save();
-      res.json(updatedService);
-    } else {
-      res.status(404).json({ message: 'Service not found' });
-    }
+    const updatedService = await prisma.service.update({
+      where: { id: req.params.id },
+      data: dataToUpdate
+    });
+    
+    res.json({ ...updatedService, _id: updatedService.id });
   } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
+    if (error.code === 'P2025') {
+      res.status(404).json({ message: 'Service not found' });
+    } else {
+      res.status(500).json({ message: 'Server error', error: error.message });
+    }
   }
 };
 
@@ -65,15 +78,16 @@ const updateService = async (req, res) => {
 // @access  Private/Admin
 const deleteService = async (req, res) => {
   try {
-    const service = await Service.findById(req.params.id);
-    if (service) {
-      await Service.deleteOne({ _id: service._id });
-      res.json({ message: 'Service removed' });
-    } else {
-      res.status(404).json({ message: 'Service not found' });
-    }
+    await prisma.service.delete({
+      where: { id: req.params.id }
+    });
+    res.json({ message: 'Service removed' });
   } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+    if (error.code === 'P2025') {
+      res.status(404).json({ message: 'Service not found' });
+    } else {
+      res.status(500).json({ message: 'Server error' });
+    }
   }
 };
 

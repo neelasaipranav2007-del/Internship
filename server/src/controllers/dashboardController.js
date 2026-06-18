@@ -1,15 +1,16 @@
-const Booking = require('../models/Booking');
-const Gallery = require('../models/Gallery');
-const Service = require('../models/Service');
+const prisma = require('../config/prisma');
 
 // @desc    Get dashboard metrics & analytics
 // @route   GET /api/dashboard/stats
 // @access  Private/Admin
 const getDashboardStats = async (req, res) => {
   try {
-    const totalImages = await Gallery.countDocuments({});
-    const totalServices = await Service.countDocuments({});
-    const bookings = await Booking.find({}).populate('services', 'title price');
+    const totalImages = await prisma.gallery.count();
+    const totalServices = await prisma.service.count();
+    const bookings = await prisma.booking.findMany({
+      include: { services: true }
+    });
+    
     let totalBookings = 0;
     let totalQueries = 0;
 
@@ -75,10 +76,12 @@ const getDashboardStats = async (req, res) => {
     });
 
     // Recent Inquiries (last 5 bookings)
-    const recentInquiries = await Booking.find({ isContactQuery: { $ne: true } })
-      .populate('services', 'title price')
-      .sort({ createdAt: -1 })
-      .limit(5);
+    const recentInquiries = await prisma.booking.findMany({
+      where: { isContactQuery: false },
+      include: { services: true },
+      orderBy: { createdAt: 'desc' },
+      take: 5
+    });
 
     // Recent Activities (combine recent bookings & custom email replies)
     const recentActivities = [];
@@ -89,19 +92,19 @@ const getDashboardStats = async (req, res) => {
         type: 'booking',
         message: `New booking inquiry #${b.referenceNumber} by ${b.customerName}`,
         time: b.createdAt,
-        reference: b._id
+        reference: b.id
       });
     });
 
     // Get email logs
     bookings.forEach(b => {
-      if (b.emailsSent && b.emailsSent.length > 0) {
+      if (b.emailsSent && Array.isArray(b.emailsSent) && b.emailsSent.length > 0) {
         b.emailsSent.forEach(email => {
           recentActivities.push({
             type: 'email',
             message: `Email [${email.emailType}] sent to ${b.customerName} - "${email.subject}"`,
             time: email.dateSent,
-            reference: b._id
+            reference: b.id
           });
         });
       }
@@ -109,6 +112,12 @@ const getDashboardStats = async (req, res) => {
 
     // Sort recent activities by time desc
     recentActivities.sort((a, b) => new Date(b.time) - new Date(a.time));
+    
+    const mappedRecentInquiries = recentInquiries.map(b => ({
+      ...b,
+      _id: b.id,
+      services: b.services.map(s => ({ ...s, _id: s.id }))
+    }));
 
     res.json({
       metrics: {
@@ -123,8 +132,8 @@ const getDashboardStats = async (req, res) => {
       },
       statusDistribution: statuses,
       monthlyAnalytics: monthlyStats,
-      recentInquiries,
-      recentActivities: recentActivities.slice(0, 8) // Limit to 8 activities
+      recentInquiries: mappedRecentInquiries,
+      recentActivities: recentActivities.slice(0, 8)
     });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
