@@ -4,7 +4,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const path = require('path');
-const prisma = require('./config/prisma');
+const prisma = require('../src/config/prisma');
 const bcrypt = require('bcryptjs');
 
 // Load env vars
@@ -141,14 +141,14 @@ seedDatabase();
 const app = express();
 
 // Routes
-const authRoutes = require('./routes/authRoutes');
-const uploadRoutes = require('./routes/uploadRoutes');
-const serviceRoutes = require('./routes/serviceRoutes');
-const galleryRoutes = require('./routes/galleryRoutes');
-const bookingRoutes = require('./routes/bookingRoutes');
-const categoryRoutes = require('./routes/categoryRoutes');
-const settingRoutes = require('./routes/settingRoutes');
-const dashboardRoutes = require('./routes/dashboardRoutes');
+const authRoutes = require('../src/routes/authRoutes');
+const uploadRoutes = require('../src/routes/uploadRoutes');
+const serviceRoutes = require('../src/routes/serviceRoutes');
+const galleryRoutes = require('../src/routes/galleryRoutes');
+const bookingRoutes = require('../src/routes/bookingRoutes');
+const categoryRoutes = require('../src/routes/categoryRoutes');
+const settingRoutes = require('../src/routes/settingRoutes');
+const dashboardRoutes = require('../src/routes/dashboardRoutes');
 
 // Middlewares
 app.use(express.json());
