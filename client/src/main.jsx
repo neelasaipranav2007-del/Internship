@@ -4,6 +4,7 @@ import App from './App.jsx'
 import './index.css'
 import { CartProvider } from './context/CartContext.jsx'
 import axios from 'axios'
+import './mockApi'
 
 // Set the base URL for API requests. In production, this will point to the Render backend.
 // In local development, the proxy in vite.config.js handles it, but setting it explicitly is safer.
